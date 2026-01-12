@@ -298,6 +298,27 @@
       </div>
     </div>
   </div>
+  <!-- Firebase SDKs (compat, sin imports) -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script>
+  // Firebase configuration (TU PROYECTO)
+  const firebaseConfig = {
+    apiKey: "AIzaSyArWJrKqGDuyGj6LtbmaY3MH6YZ-DE_46A",
+    authDomain: "reservas-isa.firebaseapp.com",
+    projectId: "reservas-isa",
+    storageBucket: "reservas-isa.appspot.com",
+    messagingSenderId: "970684177150",
+    appId: "1:970684177150:web:3292e4657e21a6c43ce3af"
+  };
+
+  // Initialize Firebase
+  firebase.initializeApp(firebaseConfig);
+
+  // Firestore database
+  const db = firebase.firestore();
+</script>
+
 
   <script>
     const STORAGE_KEY = "reservas_importaciones_v4";
@@ -633,4 +654,5 @@
   </script>
 </body>
 </html>
+
 
