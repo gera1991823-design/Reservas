@@ -8,7 +8,6 @@
   <!-- XLSX (SheetJS) para exportar a Excel -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
-  
   <style>
     :root{
       /* John Deere accents */
@@ -154,7 +153,7 @@
       white-space:nowrap;
       font-weight:800;
       letter-spacing:.2px;
-      text-align:center; /* centrado */
+      text-align:center;
     }
 
     tbody td{
@@ -163,13 +162,12 @@
       background:var(--row);
       white-space:nowrap;
       vertical-align:middle;
-      text-align:center; /* centrado */
+      text-align:center;
     }
 
     tbody tr:nth-child(even) td{ background:var(--row-alt); }
     tbody tr:hover td{ background:rgba(54,124,43,.22); }
 
-    /* foco edición sin amarillo fuerte */
     tbody td[contenteditable="true"]:focus{
       outline:2px solid rgba(255,222,0,.55);
       border-radius:8px;
@@ -244,7 +242,7 @@
     <header>
       <div class="title">
         <h1>Reservas de Importaciones</h1>
-        <p>Tabla editable · buscador + filtro · exportación Excel (XLSX)</p>
+        <p>Tabla editable · buscador + filtro · exportación Excel (XLSX) · sincroniza en vivo (Firestore)</p>
       </div>
 
       <div class="toolbar">
@@ -266,6 +264,7 @@
       <div class="meta">
         <div class="pill"><span class="dot"></span> Vista principal</div>
         <div class="pill">Filas: <strong id="rowCount" style="color:var(--text)">0</strong></div>
+        <div class="pill">Estado: <strong id="syncStatus" style="color:var(--text)">Conectando…</strong></div>
       </div>
 
       <div class="table-wrap">
@@ -293,15 +292,59 @@
       </div>
 
       <div class="footer">
-        <div>Tip: click en una celda para editar. Enter confirma. Cambios guardados en el navegador.</div>
-        <div>Guardado local: <code>localStorage</code></div>
+        <div>Tip: click en una celda para editar. Enter confirma. Cambios se sincronizan para todas las PCs.</div>
+        <div>Back-end: <code>Firebase Firestore</code> · (se quitó <code>localStorage</code>)</div>
       </div>
     </div>
   </div>
 
-  <script>
-    const STORAGE_KEY = "reservas_importaciones_v4";
+  <!-- IMPORTANTE:
+       Este script usa "type=module" (Firebase v9+). No lo abras con file://
+       Abrilo desde un servidor/hosting (Firebase Hosting, IIS, Apache, etc). -->
+  <script type="module">
+    // =========================
+    // FIREBASE (Firestore realtime + Auth anónimo)
+    // =========================
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-app.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js";
+    import {
+      getFirestore,
+      collection,
+      doc,
+      addDoc,
+      updateDoc,
+      deleteDoc,
+      onSnapshot,
+      query,
+      orderBy,
+      serverTimestamp,
+      getDocs,
+      writeBatch,
+      limit
+    } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js";
 
+    // (Opcional) Storage si querés subir el XLSX exportado
+    // import { getStorage, ref as sRef, uploadBytes } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-storage.js";
+
+    // ==== TU firebaseConfig (tal cual lo pasaste) ====
+    const firebaseConfig = {
+      apiKey: "AIzaSyA0xgTpM2NjDoyBD5Eo5F2FN-Dxy6UgI9Y",
+      authDomain: "reservas-importaciones.firebaseapp.com",
+      projectId: "reservas-importaciones",
+      storageBucket: "reservas-importaciones.firebasestorage.app",
+      messagingSenderId: "404230429294",
+      appId: "1:404230429294:web:c11b2d0c15a43ce0f6247f",
+      measurementId: "G-S05S1H4XZ0"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    // const storage = getStorage(app);
+
+    // =========================
+    // TU APP (misma UI + Firestore en vez de localStorage)
+    // =========================
     const columns = [
       "caja","material","cantidadPack","cantid","descripcion","comentario",
       "oc","carpeta","pedidoTrasla","sucurs","fecha","horaCarga","cumplido"
@@ -311,6 +354,7 @@
     const search = document.getElementById("search");
     const filterCumplido = document.getElementById("filterCumplido");
     const rowCount = document.getElementById("rowCount");
+    const syncStatus = document.getElementById("syncStatus");
 
     function pad2(n){ return String(n).padStart(2,"0"); }
 
@@ -322,17 +366,6 @@
     function nowTimeStr(){
       const d = new Date();
       return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-    }
-
-    function loadData(){
-      try{
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if(!raw) return seedData();
-        const data = JSON.parse(raw);
-        return Array.isArray(data) ? data : seedData();
-      }catch{
-        return seedData();
-      }
     }
 
     function seedData(){
@@ -353,11 +386,12 @@
       }];
     }
 
-    function saveData(data){
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    }
+    // Datos en memoria (la fuente real es Firestore)
+    let data = [];
 
-    let data = loadData();
+    // Colección donde se guardan filas
+    const reservasCol = collection(db, "reservas");
+    const reservasQuery = query(reservasCol, orderBy("createdAt", "desc"));
 
     function matchesFilters(row){
       const q = search.value.trim().toLowerCase();
@@ -430,8 +464,58 @@
       }
     }
 
-    // Guardar cambios al salir de la celda (solo celdas editables)
-    tbody.addEventListener("focusout", (e) => {
+    // =========================
+    // FIRESTORE: Seed inicial si está vacío
+    // =========================
+    async function ensureSeedIfEmpty(){
+      // Pregunta rápida: ¿hay al menos 1 doc?
+      const q1 = query(reservasCol, limit(1));
+      const snap = await getDocs(q1);
+      if(snap.size > 0) return;
+
+      const seed = seedData();
+      for(const row of seed){
+        await addDoc(reservasCol, {
+          ...row,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+      }
+    }
+
+    // =========================
+    // FIRESTORE: realtime listener
+    // =========================
+    async function startRealtime(){
+      try{
+        syncStatus.textContent = "Autenticando…";
+        await signInAnonymously(auth);
+
+        syncStatus.textContent = "Cargando…";
+        await ensureSeedIfEmpty();
+
+        syncStatus.textContent = "En vivo ✅";
+
+        onSnapshot(reservasQuery, (snap) => {
+          data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          render();
+        }, (err) => {
+          console.error(err);
+          syncStatus.textContent = "Error 🔴";
+          alert("Error de sincronización. Revisá reglas de Firestore/credenciales.");
+        });
+
+      }catch(err){
+        console.error(err);
+        syncStatus.textContent = "Error 🔴";
+        alert("No se pudo conectar a Firebase. Revisá firebaseConfig y reglas.");
+      }
+    }
+
+    // =========================
+    // EDITAR: updateDoc al salir de celda
+    // =========================
+    tbody.addEventListener("focusout", async (e) => {
       const td = e.target.closest("td");
       if(!td || !td.dataset.key) return;
 
@@ -439,10 +523,20 @@
       const key = td.dataset.key;
 
       if(!Number.isFinite(idx) || !data[idx]) return;
-      if(key === "cumplido") return; // se guarda por change del select
+      if(key === "cumplido") return;
 
-      data[idx][key] = td.innerText.trim();
-      saveData(data);
+      const rowId = data[idx].id;
+      const value = td.innerText.trim();
+
+      try{
+        await updateDoc(doc(db, "reservas", rowId), {
+          [key]: value,
+          updatedAt: serverTimestamp()
+        });
+      }catch(err){
+        console.error(err);
+        alert("No se pudo guardar el cambio (Firestore).");
+      }
     });
 
     // Enter: evitar saltos de línea
@@ -453,8 +547,29 @@
       }
     });
 
-    // Acciones (duplicar / eliminar)
-    tbody.addEventListener("click", (e) => {
+    // Cumplido: guardar por cambio del select
+    tbody.addEventListener("change", async (e) => {
+      const sel = e.target.closest("select.jd-select");
+      if(!sel) return;
+
+      const idx = Number(sel.dataset.idx);
+      if(!Number.isFinite(idx) || !data[idx]) return;
+
+      const rowId = data[idx].id;
+
+      try{
+        await updateDoc(doc(db, "reservas", rowId), {
+          cumplido: sel.value,
+          updatedAt: serverTimestamp()
+        });
+      }catch(err){
+        console.error(err);
+        alert("No se pudo guardar 'Cumplido'.");
+      }
+    });
+
+    // Duplicar / Eliminar
+    tbody.addEventListener("click", async (e) => {
       const btn = e.target.closest("button[data-action]");
       if(!btn) return;
 
@@ -462,62 +577,92 @@
       const idx = Number(btn.dataset.idx);
       if(!Number.isFinite(idx) || !data[idx]) return;
 
+      const row = data[idx];
+
       if(action === "del"){
-        data.splice(idx, 1);
-        saveData(data);
-        render();
+        if(!confirm("¿Eliminar esta fila?")) return;
+        try{
+          await deleteDoc(doc(db, "reservas", row.id));
+        }catch(err){
+          console.error(err);
+          alert("No se pudo eliminar.");
+        }
       }
 
       if(action === "dup"){
-        const copy = structuredClone(data[idx]);
-        data.splice(idx+1, 0, copy);
-        saveData(data);
-        render();
+        const copy = structuredClone(row);
+        delete copy.id;
+        delete copy.createdAt;
+        delete copy.updatedAt;
+
+        try{
+          await addDoc(reservasCol, {
+            ...copy,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+        }catch(err){
+          console.error(err);
+          alert("No se pudo duplicar.");
+        }
       }
     });
 
-    // Cumplido: guardar por cambio del select
-    tbody.addEventListener("change", (e) => {
-      const sel = e.target.closest("select.jd-select");
-      if(!sel) return;
-
-      const idx = Number(sel.dataset.idx);
-      if(!Number.isFinite(idx) || !data[idx]) return;
-
-      data[idx].cumplido = sel.value; // "SI" | "NO" | "SIN REALIZAR"
-      saveData(data);
-    });
-
-    // Agregar fila: fecha y hora automáticas
-    document.getElementById("addRow").addEventListener("click", () => {
+    // Agregar fila
+    document.getElementById("addRow").addEventListener("click", async () => {
       const empty = Object.fromEntries(columns.map(c => [c, ""]));
       empty.cumplido = "SIN REALIZAR";
       empty.fecha = nowDateStr();
       empty.horaCarga = nowTimeStr();
-      data.unshift(empty);
-      saveData(data);
-      render();
+
+      try{
+        await addDoc(reservasCol, {
+          ...empty,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+      }catch(err){
+        console.error(err);
+        alert("No se pudo agregar la fila.");
+      }
     });
 
-    document.getElementById("clearAll").addEventListener("click", () => {
-      if(!confirm("¿Seguro que querés vaciar toda la tabla?")) return;
-      data = [];
-      saveData(data);
-      render();
+    // Vaciar todo (borra todos los docs de la colección en lotes de 500)
+    document.getElementById("clearAll").addEventListener("click", async () => {
+      if(!confirm("¿Seguro que querés vaciar toda la tabla? (se borra para TODOS)")) return;
+
+      try{
+        syncStatus.textContent = "Vaciando…";
+
+        const snap = await getDocs(reservasCol);
+        const docs = snap.docs;
+
+        const CHUNK = 500;
+        for(let i=0; i<docs.length; i+=CHUNK){
+          const batch = writeBatch(db);
+          const chunk = docs.slice(i, i+CHUNK);
+          for(const d of chunk){
+            batch.delete(d.ref);
+          }
+          await batch.commit();
+        }
+
+        syncStatus.textContent = "En vivo ✅";
+      }catch(err){
+        console.error(err);
+        syncStatus.textContent = "Error 🔴";
+        alert("No se pudo vaciar. Revisá reglas/permisos.");
+      }
     });
 
+    // Filtros UI
     search.addEventListener("input", render);
     filterCumplido.addEventListener("change", render);
 
     /* =========================
-       EXPORTAR XLSX (con extras)
-       - ancho de columnas automático
-       - fecha/hora como tipo Excel (no texto)
-       - filtros (autoFilter) en la primera fila
-       - freeze encabezado
+       EXPORTAR XLSX (tu mismo código)
     ========================== */
 
-    // Parse "dd/mm/yyyy" -> Date (local)
     function parseDateDMY(s){
       const str = (s ?? "").toString().trim();
       const m = str.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
@@ -527,7 +672,6 @@
       return Number.isFinite(d.getTime()) ? d : null;
     }
 
-    // Parse "HH:MM" -> fraction of day for Excel time
     function parseTimeHMToExcel(s){
       const str = (s ?? "").toString().trim();
       const m = str.match(/^(\d{1,2}):(\d{2})$/);
@@ -538,7 +682,6 @@
     }
 
     function autoColsFromAOA(aoa){
-      // calcula ancho por longitud visible (max) por columna
       const colCount = Math.max(...aoa.map(r => r.length));
       const maxLen = new Array(colCount).fill(0);
 
@@ -548,8 +691,8 @@
           let len = 0;
 
           if(v == null) len = 0;
-          else if(v instanceof Date) len = 10; // dd/mm/yyyy
-          else if(typeof v === "number") len = 5; // hh:mm aprox
+          else if(v instanceof Date) len = 10;
+          else if(typeof v === "number") len = 5;
           else len = String(v).length;
 
           if(len > maxLen[c]) maxLen[c] = len;
@@ -569,7 +712,6 @@
         "O/C","Carpeta","Pedido Trasla","Sucurs","Fecha","Hora de carga","Cumplido"
       ];
 
-      // Armamos AOA (array of arrays) usando Date y time-num para Excel
       const aoa = [
         header,
         ...rows.map(r => ([
@@ -583,18 +725,15 @@
           r.carpeta ?? "",
           r.pedidoTrasla ?? "",
           r.sucurs ?? "",
-          parseDateDMY(r.fecha) ?? "",                 // Date real
-          parseTimeHMToExcel(r.horaCarga) ?? "",       // número (fracción de día)
+          parseDateDMY(r.fecha) ?? "",
+          parseTimeHMToExcel(r.horaCarga) ?? "",
           r.cumplido ?? ""
         ]))
       ];
 
       const wb = XLSX.utils.book_new();
-      // cellDates:true hace que Date se escriba como fecha real
       const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true });
 
-      // Formatos (z) para fecha y hora
-      // Columna Fecha = K (index 10), Hora = L (index 11)
       const range = XLSX.utils.decode_range(ws["!ref"]);
       for(let R = range.s.r + 1; R <= range.e.r; R++){
         const dateCellAddr = XLSX.utils.encode_cell({ r:R, c:10 });
@@ -613,13 +752,8 @@
         }
       }
 
-      // Congelar encabezado
       ws["!freeze"] = { xSplit: 0, ySplit: 1 };
-
-      // Filtros tipo Excel en primera fila
       ws["!autofilter"] = { ref: ws["!ref"] };
-
-      // Anchos automáticos de columnas
       ws["!cols"] = autoColsFromAOA(aoa);
 
       XLSX.utils.book_append_sheet(wb, ws, "Reservas");
@@ -629,8 +763,8 @@
       XLSX.writeFile(wb, fileName);
     });
 
-    render();
+    // Iniciar realtime
+    startRealtime();
   </script>
 </body>
 </html>
-
