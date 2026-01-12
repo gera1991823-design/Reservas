@@ -8,7 +8,6 @@
   <!-- XLSX (SheetJS) para exportar a Excel -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
-  
   <style>
     :root{
       /* John Deere accents */
@@ -244,7 +243,7 @@
     <header>
       <div class="title">
         <h1>Reservas de Importaciones</h1>
-        <p>Tabla editable · buscador + filtro · exportación Excel (XLSX)</p>
+        <p>Tabla editable · buscador + filtro · exportación Excel (XLSX) · sincronizada con Firebase</p>
       </div>
 
       <div class="toolbar">
@@ -293,51 +292,35 @@
       </div>
 
       <div class="footer">
-        <div>Tip: click en una celda para editar. Enter confirma. Cambios guardados en el navegador.</div>
-        <div>Guardado local: <code>localStorage</code></div>
+        <div>Tip: click en una celda para editar. Enter confirma. Cambios se sincronizan en Firebase.</div>
+        <div>Backend: <code>Firebase Firestore</code></div>
       </div>
     </div>
   </div>
+
   <!-- Firebase SDKs (compat, sin imports) -->
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
-<script>
-  // Firebase configuration (TU PROYECTO)
-  const firebaseConfig = {
-    apiKey: "AIzaSyArWJrKqGDuyGj6LtbmaY3MH6YZ-DE_46A",
-    authDomain: "reservas-isa.firebaseapp.com",
-    projectId: "reservas-isa",
-    storageBucket: "reservas-isa.appspot.com",
-    messagingSenderId: "970684177150",
-    appId: "1:970684177150:web:3292e4657e21a6c43ce3af"
-  };
-
-  // Initialize Firebase
-  firebase.initializeApp(firebaseConfig);
-
-  // Firestore database
-  const db = firebase.firestore();
-  <script>
-async function loadFromFirestore() {
-  const snapshot = await db.collection("reservas").get();
-  const rows = [];
-
-  snapshot.forEach(doc => {
-    rows.push({
-      id: doc.id,
-      ...doc.data()
-    });
-  });
-
-  return rows;
-}
-</script>
-
-</script>
-
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 
   <script>
-    const STORAGE_KEY = "reservas_importaciones_v4";
+    // Firebase configuration (TU PROYECTO)
+    const firebaseConfig = {
+      apiKey: "AIzaSyArWJrKqGDuyGj6LtbmaY3MH6YZ-DE_46A",
+      authDomain: "reservas-isa.firebaseapp.com",
+      projectId: "reservas-isa",
+      storageBucket: "reservas-isa.appspot.com",
+      messagingSenderId: "970684177150",
+      appId: "1:970684177150:web:3292e4657e21a6c43ce3af"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+  </script>
+
+  <script>
+    /* =========================
+       APP (Firestore sincronizado)
+    ========================== */
 
     const columns = [
       "caja","material","cantidadPack","cantid","descripcion","comentario",
@@ -350,63 +333,26 @@ async function loadFromFirestore() {
     const rowCount = document.getElementById("rowCount");
 
     function pad2(n){ return String(n).padStart(2,"0"); }
-
     function nowDateStr(){
       const d = new Date();
       return `${pad2(d.getDate())}/${pad2(d.getMonth()+1)}/${d.getFullYear()}`;
     }
-
     function nowTimeStr(){
       const d = new Date();
       return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
     }
 
-    function loadData(){
-      try{
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if(!raw) return seedData();
-        const data = JSON.parse(raw);
-        return Array.isArray(data) ? data : seedData();
-      }catch{
-        return seedData();
-      }
-    }
-
-    function seedData(){
-      return [{
-        caja:"SBKM5D",
-        material:"KK25029",
-        cantidadPack:"4",
-        cantid:"2",
-        descripcion:"APOYO",
-        comentario:"",
-        oc:"1200021702",
-        carpeta:"88789",
-        pedidoTrasla:"1601220470",
-        sucurs:"S002",
-        fecha:"27/11/2025",
-        horaCarga:"08:30",
-        cumplido:"SIN REALIZAR"
-      }];
-    }
-
-    function saveData(data){
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    }
-
-   let data = [];
-
-loadFromFirestore().then(rows => {
-  data = rows;
-  render();
-});
-
+    // Datos en memoria (vienen de Firestore)
+    let data = [];
 
     function matchesFilters(row){
       const q = search.value.trim().toLowerCase();
       const f = filterCumplido.value;
 
-      const haystack = columns.map(k => (row[k] ?? "").toString().toLowerCase()).join(" | ");
+      const haystack = columns
+        .map(k => (row[k] ?? "").toString().toLowerCase())
+        .join(" | ");
+
       const okSearch = !q || haystack.includes(q);
 
       let okCumplido = true;
@@ -426,32 +372,29 @@ loadFromFirestore().then(rows => {
     function render(){
       tbody.innerHTML = "";
 
-      const visible = data
-        .map((row, idx) => ({row, idx}))
-        .filter(({row}) => matchesFilters(row));
-
+      const visible = data.filter(matchesFilters);
       rowCount.textContent = visible.length;
 
-      for(const {row, idx} of visible){
+      for(const row of visible){
         const tr = document.createElement("tr");
 
         for(const key of columns){
           const td = document.createElement("td");
-          td.setAttribute("data-key", key);
-          td.setAttribute("data-idx", idx);
+          td.dataset.key = key;
+          td.dataset.id = row.id;
 
           if(key === "cumplido"){
             const current = (row[key] ?? "SIN REALIZAR").toString().trim().toUpperCase();
             const normalized = (current === "" ? "SIN REALIZAR" : current);
 
             td.innerHTML = `
-              <select class="jd-select" data-idx="${idx}" data-key="cumplido" aria-label="Cumplido">
+              <select class="jd-select" data-id="${row.id}" data-key="cumplido" aria-label="Cumplido">
                 <option value="SIN REALIZAR" ${normalized === "SIN REALIZAR" ? "selected" : ""}>SIN REALIZAR</option>
                 <option value="SI" ${normalized === "SI" ? "selected" : ""}>SI</option>
                 <option value="NO" ${normalized === "NO" ? "selected" : ""}>NO</option>
               </select>
             `;
-          }else{
+          } else {
             td.textContent = row[key] ?? "";
             td.contentEditable = "true";
           }
@@ -463,8 +406,8 @@ loadFromFirestore().then(rows => {
         tdA.className = "col-xs";
         tdA.innerHTML = `
           <div class="row-actions">
-            <button class="icon-btn" title="Duplicar" data-action="dup" data-idx="${idx}">⎘</button>
-            <button class="icon-btn danger" title="Eliminar" data-action="del" data-idx="${idx}">✕</button>
+            <button class="icon-btn" title="Duplicar" data-action="dup" data-id="${row.id}">⎘</button>
+            <button class="icon-btn danger" title="Eliminar" data-action="del" data-id="${row.id}">✕</button>
           </div>
         `;
         tr.appendChild(tdA);
@@ -473,20 +416,64 @@ loadFromFirestore().then(rows => {
       }
     }
 
-    // Guardar cambios al salir de la celda (solo celdas editables)
-    tbody.addEventListener("focusout", (e) => {
-      const td = e.target.closest("td");
-      if(!td || !td.dataset.key) return;
+    /* =========================
+       Firestore: realtime sync
+    ========================== */
+    const reservasRef = db.collection("reservas");
 
-      const idx = Number(td.dataset.idx);
-      const key = td.dataset.key;
-
-      if(!Number.isFinite(idx) || !data[idx]) return;
-      if(key === "cumplido") return; // se guarda por change del select
-
-      data[idx][key] = td.innerText.trim();
-      saveData(data);
+    // Escucha en tiempo real: si otro usuario edita/agrega, a vos te aparece
+    reservasRef.orderBy("createdAt", "desc").onSnapshot((snap) => {
+      const rows = [];
+      snap.forEach(doc => {
+        const d = doc.data() || {};
+        const row = { id: doc.id };
+        columns.forEach(c => row[c] = d[c] ?? "");
+        rows.push(row);
+      });
+      data = rows;
+      render();
+    }, (err) => {
+      console.error("Firestore onSnapshot error:", err);
+      alert("Error conectando con Firebase (ver consola).");
     });
+
+    async function updateCell(docId, key, value){
+      // Normalización mínima
+      const payload = { [key]: value ?? "" , updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
+      await reservasRef.doc(docId).set(payload, { merge: true });
+    }
+
+    async function deleteRow(docId){
+      await reservasRef.doc(docId).delete();
+    }
+
+    async function addRow(){
+      const empty = Object.fromEntries(columns.map(c => [c, ""]));
+      empty.cumplido = "SIN REALIZAR";
+      empty.fecha = nowDateStr();
+      empty.horaCarga = nowTimeStr();
+      empty.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+      empty.updatedAt = firebase.firestore.FieldValue.serverTimestamp();
+      await reservasRef.add(empty);
+    }
+
+    async function duplicateRow(docId){
+      const original = data.find(r => r.id === docId);
+      if(!original) return;
+
+      const copy = Object.fromEntries(columns.map(c => [c, original[c] ?? ""]));
+      // Si querés que al duplicar cambie fecha/hora, descomentá:
+      // copy.fecha = nowDateStr();
+      // copy.horaCarga = nowTimeStr();
+
+      copy.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+      copy.updatedAt = firebase.firestore.FieldValue.serverTimestamp();
+      await reservasRef.add(copy);
+    }
+
+    /* =========================
+       Events
+    ========================== */
 
     // Enter: evitar saltos de línea
     tbody.addEventListener("keydown", (e) => {
@@ -496,71 +483,96 @@ loadFromFirestore().then(rows => {
       }
     });
 
-    // Acciones (duplicar / eliminar)
-    tbody.addEventListener("click", (e) => {
-      const btn = e.target.closest("button[data-action]");
-      if(!btn) return;
+    // Guardar cambios al salir de la celda
+    tbody.addEventListener("focusout", async (e) => {
+      const td = e.target.closest("td");
+      if(!td || !td.dataset.key || !td.dataset.id) return;
 
-      const action = btn.dataset.action;
-      const idx = Number(btn.dataset.idx);
-      if(!Number.isFinite(idx) || !data[idx]) return;
+      const key = td.dataset.key;
+      const docId = td.dataset.id;
 
-      if(action === "del"){
-        data.splice(idx, 1);
-        saveData(data);
-        render();
-      }
+      // Cumplido se guarda por change del select
+      if(key === "cumplido") return;
 
-      if(action === "dup"){
-        const copy = structuredClone(data[idx]);
-        data.splice(idx+1, 0, copy);
-        saveData(data);
-        render();
+      const value = td.innerText.trim();
+      try{
+        await updateCell(docId, key, value);
+      }catch(err){
+        console.error(err);
+        alert("No se pudo guardar el cambio en Firebase.");
       }
     });
 
     // Cumplido: guardar por cambio del select
-    tbody.addEventListener("change", (e) => {
+    tbody.addEventListener("change", async (e) => {
       const sel = e.target.closest("select.jd-select");
       if(!sel) return;
 
-      const idx = Number(sel.dataset.idx);
-      if(!Number.isFinite(idx) || !data[idx]) return;
+      const docId = sel.dataset.id;
+      const key = sel.dataset.key;
+      const value = sel.value;
 
-      data[idx].cumplido = sel.value; // "SI" | "NO" | "SIN REALIZAR"
-      saveData(data);
+      try{
+        await updateCell(docId, key, value);
+      }catch(err){
+        console.error(err);
+        alert("No se pudo guardar Cumplido en Firebase.");
+      }
     });
 
-    // Agregar fila: fecha y hora automáticas
-    document.getElementById("addRow").addEventListener("click", () => {
-      const empty = Object.fromEntries(columns.map(c => [c, ""]));
-      empty.cumplido = "SIN REALIZAR";
-      empty.fecha = nowDateStr();
-      empty.horaCarga = nowTimeStr();
-      data.unshift(empty);
-      saveData(data);
-      render();
+    // Acciones: duplicar / eliminar
+    tbody.addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-action]");
+      if(!btn) return;
+
+      const action = btn.dataset.action;
+      const docId = btn.dataset.id;
+
+      try{
+        if(action === "del"){
+          if(!confirm("¿Eliminar esta fila?")) return;
+          await deleteRow(docId);
+        }
+        if(action === "dup"){
+          await duplicateRow(docId);
+        }
+      }catch(err){
+        console.error(err);
+        alert("Acción falló en Firebase.");
+      }
     });
 
-    document.getElementById("clearAll").addEventListener("click", () => {
-      if(!confirm("¿Seguro que querés vaciar toda la tabla?")) return;
-      data = [];
-      saveData(data);
-      render();
+    // Toolbar
+    document.getElementById("addRow").addEventListener("click", async () => {
+      try{ await addRow(); }
+      catch(err){ console.error(err); alert("No se pudo agregar fila."); }
+    });
+
+    document.getElementById("clearAll").addEventListener("click", async () => {
+      if(!confirm("¿Seguro que querés vaciar TODA la tabla (Firebase)?")) return;
+
+      try{
+        const snap = await reservasRef.get();
+        const batch = db.batch();
+        snap.forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+      }catch(err){
+        console.error(err);
+        alert("No se pudo vaciar la tabla.");
+      }
     });
 
     search.addEventListener("input", render);
     filterCumplido.addEventListener("change", render);
 
     /* =========================
-       EXPORTAR XLSX (con extras)
+       Exportar XLSX (extras)
        - ancho de columnas automático
-       - fecha/hora como tipo Excel (no texto)
-       - filtros (autoFilter) en la primera fila
+       - fecha/hora como “fecha” real de Excel
+       - filtros en primera fila
        - freeze encabezado
     ========================== */
 
-    // Parse "dd/mm/yyyy" -> Date (local)
     function parseDateDMY(s){
       const str = (s ?? "").toString().trim();
       const m = str.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
@@ -570,7 +582,6 @@ loadFromFirestore().then(rows => {
       return Number.isFinite(d.getTime()) ? d : null;
     }
 
-    // Parse "HH:MM" -> fraction of day for Excel time
     function parseTimeHMToExcel(s){
       const str = (s ?? "").toString().trim();
       const m = str.match(/^(\d{1,2}):(\d{2})$/);
@@ -581,7 +592,6 @@ loadFromFirestore().then(rows => {
     }
 
     function autoColsFromAOA(aoa){
-      // calcula ancho por longitud visible (max) por columna
       const colCount = Math.max(...aoa.map(r => r.length));
       const maxLen = new Array(colCount).fill(0);
 
@@ -589,19 +599,14 @@ loadFromFirestore().then(rows => {
         for(let c=0; c<colCount; c++){
           const v = row[c];
           let len = 0;
-
           if(v == null) len = 0;
-          else if(v instanceof Date) len = 10; // dd/mm/yyyy
-          else if(typeof v === "number") len = 5; // hh:mm aprox
+          else if(v instanceof Date) len = 10;
+          else if(typeof v === "number") len = 5;
           else len = String(v).length;
-
           if(len > maxLen[c]) maxLen[c] = len;
         }
       }
-
-      return maxLen.map(n => ({
-        wch: Math.min(40, Math.max(10, n + 2))
-      }));
+      return maxLen.map(n => ({ wch: Math.min(40, Math.max(10, n + 2)) }));
     }
 
     document.getElementById("exportXlsx").addEventListener("click", () => {
@@ -612,7 +617,6 @@ loadFromFirestore().then(rows => {
         "O/C","Carpeta","Pedido Trasla","Sucurs","Fecha","Hora de carga","Cumplido"
       ];
 
-      // Armamos AOA (array of arrays) usando Date y time-num para Excel
       const aoa = [
         header,
         ...rows.map(r => ([
@@ -626,18 +630,15 @@ loadFromFirestore().then(rows => {
           r.carpeta ?? "",
           r.pedidoTrasla ?? "",
           r.sucurs ?? "",
-          parseDateDMY(r.fecha) ?? "",                 // Date real
-          parseTimeHMToExcel(r.horaCarga) ?? "",       // número (fracción de día)
+          parseDateDMY(r.fecha) ?? "",
+          parseTimeHMToExcel(r.horaCarga) ?? "",
           r.cumplido ?? ""
         ]))
       ];
 
       const wb = XLSX.utils.book_new();
-      // cellDates:true hace que Date se escriba como fecha real
       const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true });
 
-      // Formatos (z) para fecha y hora
-      // Columna Fecha = K (index 10), Hora = L (index 11)
       const range = XLSX.utils.decode_range(ws["!ref"]);
       for(let R = range.s.r + 1; R <= range.e.r; R++){
         const dateCellAddr = XLSX.utils.encode_cell({ r:R, c:10 });
@@ -656,13 +657,8 @@ loadFromFirestore().then(rows => {
         }
       }
 
-      // Congelar encabezado
       ws["!freeze"] = { xSplit: 0, ySplit: 1 };
-
-      // Filtros tipo Excel en primera fila
       ws["!autofilter"] = { ref: ws["!ref"] };
-
-      // Anchos automáticos de columnas
       ws["!cols"] = autoColsFromAOA(aoa);
 
       XLSX.utils.book_append_sheet(wb, ws, "Reservas");
@@ -671,11 +667,6 @@ loadFromFirestore().then(rows => {
       const fileName = `reservas_importaciones_${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}.xlsx`;
       XLSX.writeFile(wb, fileName);
     });
-
-    render();
   </script>
 </body>
 </html>
-
-
-
