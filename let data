@@ -317,6 +317,22 @@
 
   // Firestore database
   const db = firebase.firestore();
+  <script>
+async function loadFromFirestore() {
+  const snapshot = await db.collection("reservas").get();
+  const rows = [];
+
+  snapshot.forEach(doc => {
+    rows.push({
+      id: doc.id,
+      ...doc.data()
+    });
+  });
+
+  return rows;
+}
+</script>
+
 </script>
 
 
@@ -378,7 +394,13 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     }
 
-    let data = loadData();
+   let data = [];
+
+loadFromFirestore().then(rows => {
+  data = rows;
+  render();
+});
+
 
     function matchesFilters(row){
       const q = search.value.trim().toLowerCase();
@@ -654,5 +676,6 @@
   </script>
 </body>
 </html>
+
 
 
